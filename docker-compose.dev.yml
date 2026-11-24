@@ -1,0 +1,8 @@
+# Local dev/test override for SoloTagsy. NOT part of the SoloHost package.
+# Mounts the in-repo skills/ directory at /opt/solotagsy-skills so the gateway
+# startup installs the tagsy skill without needing the git repo to exist yet.
+# Use: docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
+services:
+  gateway:
+    volumes:
+      - ./skills:/opt/solotagsy-skills:ro

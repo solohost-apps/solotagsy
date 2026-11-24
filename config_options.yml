@@ -1,0 +1,181 @@
+# SoloTagsy install form. Writes only .env; docker-compose.yml turns these into
+# the container's config (provider keys, model choice, Telegram, web search, and
+# the Tagsy skill settings) at start.
+title: SoloTagsy
+eyebrow: SoloHost App
+description: |
+  A Tagsy assistant that runs on your node. It is built on OpenClaw, so it works
+  in the browser and in Telegram with tools like web search, and it ships with
+  the Tagsy skill: ask why a reward, listing, or sale was decided, file an
+  appeal, check your TAGC rewards and standing, and read the weekly report.
+
+  Pick where its model comes from: a cloud provider with an API key, your own
+  Ollama server on this machine, or any OpenAI-compatible endpoint.
+
+  The access token you set is your login to the Control UI. Your conversations
+  go to whichever model provider you pick, as with any cloud AI service. With
+  Ollama or a custom endpoint they can stay on your own hardware.
+
+  To use the Tagsy features, link your Pi account once after install: open the
+  Tagsy app, choose "Connect SoloClaw", and paste the code it shows into the
+  chat.
+output_file: .env
+after_save: >
+  Saved. Install or redeploy the package to apply. The first start downloads a
+  small search plugin and the Tagsy skill, so give it a minute. When the app
+  opens, sign in with the Control UI access token you set above. To enable
+  Tagsy answers, link your Pi account in the chat with a code from the Tagsy
+  app ("Connect SoloClaw"). If you use Ollama, the model name must match one
+  from "ollama list" on your machine.
+
+fixed_values:
+  - name: TAGSY_SKILL_GIT_URL
+    value: "https://github.com/vrajasekhar1/solotagsy.git"
+    # Public repo holding this package and the skills/tagsy skill folder.
+    # The gateway clones it at startup and installs the skill.
+
+fields:
+  - name: OPENCLAW_GATEWAY_TOKEN
+    label: Control UI access token
+    type: password
+    preserve_if_blank: true
+    required: true
+    help: >
+      This is your login. Choose any value and save it. After install you paste
+      this exact token into the OpenClaw Control UI to sign in.
+    env_comment: Shared secret that gates access to the OpenClaw Control UI.
+
+  - name: MODEL_PROVIDER
+    label: Model provider
+    type: select
+    default: anthropic
+    help: Choose where the assistant gets its model, then fill in the matching fields below.
+    env_comment: The provider the assistant starts on; startup maps it to a supported model.
+    options:
+      - value: anthropic
+        label: Anthropic (Claude)
+      - value: openai
+        label: OpenAI
+      - value: openrouter
+        label: OpenRouter (many models, one key)
+      - value: ollama
+        label: Ollama on this machine (no key needed)
+      - value: custom
+        label: Custom OpenAI-compatible endpoint
+
+  - name: ANTHROPIC_API_KEY
+    label: Anthropic API key
+    type: password
+    preserve_if_blank: true
+    required: false
+    help: From console.anthropic.com. Must be valid and funded.
+    env_comment: API key used when the provider is Anthropic.
+    visible_if:
+      field: MODEL_PROVIDER
+      in: [anthropic]
+
+  - name: OPENAI_API_KEY
+    label: OpenAI API key
+    type: password
+    preserve_if_blank: true
+    required: false
+    help: From platform.openai.com. Must be valid and funded.
+    env_comment: API key used when the provider is OpenAI.
+    visible_if:
+      field: MODEL_PROVIDER
+      in: [openai]
+
+  - name: OPENROUTER_API_KEY
+    label: OpenRouter API key
+    type: password
+    preserve_if_blank: true
+    required: false
+    help: From openrouter.ai/keys. One key reaches models from many companies.
+    env_comment: API key used when the provider is OpenRouter.
+    visible_if:
+      field: MODEL_PROVIDER
+      in: [openrouter]
+
+  - name: OLLAMA_MODEL
+    label: Ollama model name
+    type: text
+    required: false
+    default: "llama3.2:3b"
+    help: >
+      Must match a model you already pulled, from "ollama list" on your
+      machine. The assistant reaches Ollama on this computer automatically.
+    env_comment: Ollama model the assistant starts on.
+    visible_if:
+      field: MODEL_PROVIDER
+      in: [ollama]
+
+  - name: CUSTOM_BASE_URL
+    label: Endpoint base URL
+    type: text
+    required: false
+    help: The OpenAI-compatible base URL, for example http://host.docker.internal:1234/v1 for LM Studio.
+    env_comment: Base URL for the custom OpenAI-compatible provider.
+    visible_if:
+      field: MODEL_PROVIDER
+      in: [custom]
+
+  - name: CUSTOM_MODEL
+    label: Model name
+    type: text
+    required: false
+    help: The model id the endpoint serves, exactly as the endpoint lists it.
+    env_comment: Model id used on the custom endpoint.
+    visible_if:
+      field: MODEL_PROVIDER
+      in: [custom]
+
+  - name: CUSTOM_API_KEY
+    label: Endpoint API key
+    type: password
+    preserve_if_blank: true
+    required: false
+    help: Only if the endpoint requires one. Leave blank for local servers like Ollama or LM Studio.
+    env_comment: Optional API key for the custom endpoint.
+    visible_if:
+      field: MODEL_PROVIDER
+      in: [custom]
+
+  - name: TELEGRAM_BOT_TOKEN
+    label: Telegram bot token
+    type: password
+    preserve_if_blank: true
+    required: false
+    help: >
+      Optional. Create a bot with @BotFather in Telegram and paste its token to
+      chat with the assistant from Telegram. Leave blank to skip Telegram.
+    env_comment: Bot token that enables the Telegram channel when set.
+
+  - name: TELEGRAM_USER_ID
+    label: Your Telegram user ID
+    type: text
+    required: false
+    help: >
+      Optional but recommended. Your numeric Telegram ID, from @userinfobot in
+      Telegram. With it, only you can message the bot. Without it, the first
+      person to message the bot approves pairing in the Control UI.
+    env_comment: Numeric Telegram user ID allowlisted for direct messages.
+
+  - name: TAGSY_API_BASE
+    label: Tagsy API base URL
+    type: text
+    required: false
+    default: "https://app.tagsy.org/api"
+    help: >
+      The Tagsy API the assistant answers from. Keep the default for the Pi
+      Next demo; change it only if Tagsy gives you a different deployment.
+    env_comment: Base URL for the Tagsy public API used by the tagsy skill.
+
+  - name: TAGSY_DEFAULT_LANG
+    label: Default answer language
+    type: text
+    required: false
+    default: "en"
+    help: >
+      Language code for Tagsy answers, for example en, hi, or tl. Users can
+      switch language in the chat at any time.
+    env_comment: Default locale for tagsy skill answer templates.

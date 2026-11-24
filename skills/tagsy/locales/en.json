@@ -1,0 +1,18 @@
+{
+  "sale_verified": "This sale was verified against the Pi ledger.",
+  "payment_not_on_chain": "The payment was not found on-chain yet. It may still be confirming.",
+  "receipt_unconfirmed": "This is held until the buyer confirms receipt, or the dispute window closes.",
+  "dispute_window_open": "The dispute window is still open. The reward becomes final after it closes with no dispute.",
+  "reward_pending_approval": "This reward is prepared and waits for the weekly approval.",
+  "reward_final": "This reward is final and payable.",
+  "listing_admitted": "This listing is admitted under the rulebook.",
+  "listing_not_admitted": "This listing is not admitted under the rulebook.",
+  "cap_exceeded": "A daily cap was reached, so this could not be recorded today.",
+  "under_review": "This is under manual review.",
+  "decision_final": "This decision is final.",
+  "appeal_submitted": "Your appeal was submitted and is waiting for review.",
+  "appeal_upheld": "Your appeal was upheld and the decision changed.",
+  "appeal_denied": "Your appeal was reviewed and the original decision stands.",
+  "appeal_under_review": "An appeal on this item is being reviewed.",
+  "question_answered": "This question was answered with a citation to the rulebook."
+}

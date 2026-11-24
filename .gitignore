@@ -1,0 +1,9 @@
+# Secrets and local env. Real values go only into the Pi Desktop install form.
+.env
+.env.*
+!.env.example
+
+# Dependencies and junk
+node_modules/
+.DS_Store
+*.log

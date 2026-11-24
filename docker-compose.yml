@@ -1,0 +1,345 @@
+# SoloTagsy: a Tagsy assistant for SoloHost / Pi Desktop.
+# Based on the proven SoloClaw package (ref/soloclaw). Same OpenClaw image and
+# nginx proxy pattern, plus a startup step that installs the `tagsy` skill from
+# this repo's skills/ directory so the assistant can answer Tagsy questions,
+# file appeals, and read weekly reports.
+#
+# Two services:
+#   proxy   - nginx sidecar. It is the pi.ui.primary service Pi Desktop embeds.
+#             It normalizes X-Forwarded-* headers so both the direct Pi Desktop
+#             embed and SoloHost's remote proxy (solohost.pinet.com) reach the
+#             gateway with attributable client headers.
+#   gateway - the OpenClaw Gateway. It publishes no port; only the proxy reaches
+#             it, on the compose network. A small background loop inside the same
+#             container auto-approves new browser device pairings.
+#
+# Skill delivery: on start the gateway container installs the `tagsy` skill into
+# the workspace skills directory. It prefers a baked-in copy at
+# /opt/solotagsy-skills (custom image or the dev override mount), otherwise it
+# clones TAGSY_SKILL_GIT_URL and copies skills/tagsy out of the repo. Both paths
+# are idempotent and safe to re-run on every boot.
+#
+# Both services get fixed addresses on a private package subnet so nginx can
+# reach the gateway by literal IP. The subnet (10.240.78.0/24) differs from
+# SoloClaw's so both apps can coexist on one machine.
+services:
+  proxy:
+    image: nginx:1.30.7-alpine3.24-slim
+    restart: unless-stopped
+    labels:
+      pi.ui.primary: "true"                      # the UI service Pi Desktop surfaces + embeds
+    # Writes a minimal nginx config, then serves it. The config forwards
+    # everything to the gateway and always sets X-Forwarded-For: it passes
+    # through a chain the remote proxy already sent, or uses the immediate
+    # peer address for direct Pi Desktop traffic. WebSocket upgrades are
+    # forwarded for the Control UI's live connection.
+    command:
+      - sh
+      - -c
+      - |
+        cat > /etc/nginx/conf.d/default.conf <<'NGINX'
+        map $$http_x_forwarded_for $$oc_xff {
+            default $$http_x_forwarded_for;
+            "" $$remote_addr;
+        }
+        map $$http_x_forwarded_proto $$oc_xfp {
+            default $$http_x_forwarded_proto;
+            "" $$scheme;
+        }
+        map $$http_upgrade $$oc_connection {
+            default upgrade;
+            "" close;
+        }
+        server {
+            listen 80;
+            location / {
+                proxy_pass http://10.240.78.20:18990;
+                proxy_http_version 1.1;
+                proxy_set_header Host $$http_host;
+                proxy_set_header X-Forwarded-For $$oc_xff;
+                proxy_set_header X-Forwarded-Proto $$oc_xfp;
+                proxy_set_header X-Forwarded-Host $$http_host;
+                proxy_set_header Upgrade $$http_upgrade;
+                proxy_set_header Connection $$oc_connection;
+                proxy_read_timeout 3600s;
+                proxy_send_timeout 3600s;
+            }
+        }
+        NGINX
+        nginx -g 'daemon off;'
+    ports:
+      - "127.0.0.1:19091:80"                     # loopback HOST:CONTAINER; distinct from SoloClaw's 19090
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1/healthz || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    networks:
+      default:
+        ipv4_address: 10.240.78.10
+
+  gateway:
+    image: ghcr.io/openclaw/openclaw:2026.11.5-browser
+    restart: unless-stopped
+    init: true
+    stop_grace_period: 30s
+    depends_on:
+      - proxy
+    # On start: install the DuckDuckGo plugin once, install the tagsy skill,
+    # merge the operator's install-form answers into OpenClaw's config, then
+    # start the Gateway. See the header comment for details.
+    command:
+      - sh
+      - -lc
+      - |
+        mkdir -p /home/node/.openclaw
+        if [ ! -f /home/node/.openclaw/.solohost-duckduckgo ]; then
+          node dist/index.js plugins install duckduckgo </dev/null \
+            && touch /home/node/.openclaw/.solohost-duckduckgo
+        fi
+        # Install the tagsy skill into the workspace skills directory
+        # (highest precedence in OpenClaw's load order). Prefer a baked-in or
+        # mounted copy at /opt/solotagsy-skills; otherwise clone the public
+        # repo named by TAGSY_SKILL_GIT_URL and copy skills/tagsy out.
+        SKILLS_DST=/home/node/.openclaw/workspace/skills
+        mkdir -p "$$SKILLS_DST"
+        if [ -f /opt/solotagsy-skills/tagsy/SKILL.md ]; then
+          rm -rf "$$SKILLS_DST/tagsy"
+          cp -r /opt/solotagsy-skills/tagsy "$$SKILLS_DST/tagsy"
+          echo "tagsy skill installed from /opt/solotagsy-skills"
+        elif [ -n "$${TAGSY_SKILL_GIT_URL:-}" ]; then
+          rm -rf /tmp/solotagsy-src
+          if git clone --depth 1 "$$TAGSY_SKILL_GIT_URL" /tmp/solotagsy-src 2>/dev/null \
+             && [ -f /tmp/solotagsy-src/skills/tagsy/SKILL.md ]; then
+            rm -rf "$$SKILLS_DST/tagsy"
+            cp -r /tmp/solotagsy-src/skills/tagsy "$$SKILLS_DST/tagsy"
+            echo "tagsy skill installed from $$TAGSY_SKILL_GIT_URL"
+          else
+            echo "tagsy skill install skipped: clone failed or skills/tagsy missing"
+          fi
+        else
+          echo "tagsy skill install skipped: no source configured"
+        fi
+        node -e '
+          const fs = require("fs");
+          const dir = "/home/node/.openclaw", file = dir + "/openclaw.json";
+          const marker = dir + "/.solohost-provider";
+          const ddgMarker = dir + "/.solohost-duckduckgo";
+          fs.mkdirSync(dir, { recursive: true });
+          let c = {}, parsed = true;
+          try {
+            c = JSON.parse(fs.readFileSync(file, "utf8"));
+          } catch (e) {
+            // A missing file is fine on a fresh install. An existing file we
+            // cannot parse is left untouched so nothing is lost.
+            parsed = !fs.existsSync(file);
+          }
+          (async () => {
+          if (parsed && c && typeof c === "object" && !Array.isArray(c)) {
+            c.gateway = c.gateway || {};
+            c.gateway.controlUi = c.gateway.controlUi || {};
+            c.gateway.controlUi.dangerouslyAllowHostHeaderOriginFallback = true;
+
+            const provider = (process.env.MODEL_PROVIDER || "").toLowerCase();
+            const ollamaModel = (process.env.OLLAMA_MODEL || "").trim();
+            const customBase = (process.env.CUSTOM_BASE_URL || "").trim().replace(/\/+$/, "");
+            const customModel = (process.env.CUSTOM_MODEL || "").trim();
+            const customKey = (process.env.CUSTOM_API_KEY || "").trim();
+
+            c.models = c.models || {};
+            c.models.providers = c.models.providers || {};
+
+            let startModel = "";
+            if (provider === "ollama") {
+              c.models.providers.ollama = Object.assign({}, c.models.providers.ollama, {
+                baseUrl: "http://host.docker.internal:11434",
+                apiKey: "ollama-local",
+                api: "ollama",
+                timeoutSeconds: 300
+              });
+              // Small local models cope poorly with the full tool surface, so
+              // lean mode trims prompts and tools for them.
+              c.agents = c.agents || {};
+              c.agents.defaults = c.agents.defaults || {};
+              c.agents.defaults.experimental = Object.assign({}, c.agents.defaults.experimental, { localModelLean: true });
+              if (ollamaModel) startModel = "ollama/" + ollamaModel;
+            } else if (provider === "custom" && customBase && customModel) {
+              c.models.providers.custom = Object.assign({}, c.models.providers.custom, {
+                baseUrl: customBase,
+                apiKey: customKey || "none",
+                api: "openai-completions",
+                models: [{
+                  id: customModel,
+                  name: customModel,
+                  reasoning: false,
+                  input: ["text"],
+                  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+                  contextWindow: 65536,
+                  maxTokens: 8192
+                }]
+              });
+              startModel = "custom/" + customModel;
+            } else {
+              startModel = {
+                anthropic: "anthropic/claude-haiku-4-5",
+                openai: "openai/gpt-6-astra",
+                openrouter: "openrouter/auto"
+              }[provider] || "";
+            }
+
+            // Apply the starting model only when the provider or model choice
+            // changes, so a model picked inside the app survives restarts.
+            let last = "";
+            try { last = fs.readFileSync(marker, "utf8").trim(); } catch (e) {}
+            const markerVal = provider + ":" + startModel;
+            if (startModel && markerVal !== last) {
+              c.agents = c.agents || {};
+              c.agents.defaults = c.agents.defaults || {};
+              c.agents.defaults.model = c.agents.defaults.model || {};
+              c.agents.defaults.model.primary = startModel;
+              fs.writeFileSync(marker, markerVal);
+            }
+
+            // Telegram is bundled in the image. Enable it only when the
+            // operator saved a bot token. A numeric user ID switches DM access
+            // to an allowlist; otherwise the default pairing flow applies.
+            const tgToken = (process.env.TELEGRAM_BOT_TOKEN || "").trim();
+            const tgUser = (process.env.TELEGRAM_USER_ID || "").trim();
+            if (tgToken) {
+              c.channels = c.channels || {};
+              const tg = c.channels.telegram =
+                (c.channels.telegram && typeof c.channels.telegram === "object")
+                  ? c.channels.telegram : {};
+              tg.enabled = true;
+              if (tgUser) {
+                tg.dmPolicy = "allowlist";
+                tg.allowFrom = ["tg:" + tgUser];
+              } else if (!tg.dmPolicy) {
+                tg.dmPolicy = "pairing";
+              }
+            }
+
+            // DuckDuckGo is key-free but ships as an installable plugin. Only
+            // reference it once the install above succeeded, so a missing
+            // plugin can never fail config validation on first boot.
+            if (fs.existsSync(ddgMarker)) {
+              c.tools = c.tools || {};
+              c.tools.web = c.tools.web || {};
+              c.tools.web.search = Object.assign({}, c.tools.web.search, {
+                enabled: true,
+                provider: "duckduckgo"
+              });
+              c.plugins = c.plugins || {};
+              c.plugins.entries = c.plugins.entries || {};
+              const ddg = c.plugins.entries.duckduckgo =
+                (c.plugins.entries.duckduckgo && typeof c.plugins.entries.duckduckgo === "object")
+                  ? c.plugins.entries.duckduckgo : {};
+              ddg.enabled = true;
+              ddg.config = ddg.config || {};
+              ddg.config.webSearch = Object.assign({}, ddg.config.webSearch, {
+                region: "us-en",
+                safeSearch: "moderate"
+              });
+            }
+
+            // Trust only the nginx sidecar for forwarded client headers. The
+            // gateway publishes no port, so nginx is the only service that can
+            // reach it, and the compose file pins its address.
+            c.gateway.trustedProxies = ["10.240.78.10"];
+
+            fs.writeFileSync(file, JSON.stringify(c, null, 2));
+          }
+          })();
+        '
+        # Auto-approve new browser device pairings. OpenClaw requires a
+        # one-time approval per device, and only loopback clients may run the
+        # approve command, so the loop lives inside this container. The
+        # gateway stays the main process; if it exits, the container exits
+        # and the restart policy brings everything back.
+        cat > /tmp/approver.js <<'EOF'
+        const fs = require("fs");
+        const { execFileSync } = require("child_process");
+        const dir = "/home/node/.openclaw/state";
+        const url = "ws://127.0.0.1:18990";
+        const token = process.env.OPENCLAW_GATEWAY_TOKEN || "";
+        let last = 0, scheduled = false;
+        function check() {
+          const now = Date.now();
+          if (now - last < 2000) return;
+          last = now;
+          try {
+            const out = execFileSync("openclaw",
+              ["devices", "list", "--url", url, "--token", token, "--json"],
+              { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+            const data = JSON.parse(out);
+            for (const p of data.pending || []) {
+              try {
+                execFileSync("openclaw",
+                  ["devices", "approve", p.requestId, "--url", url, "--token", token],
+                  { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+                console.log(new Date().toISOString(), "approved", p.requestId);
+              } catch (e) {
+                console.log(new Date().toISOString(), "approve failed", p.requestId);
+              }
+            }
+          } catch (e) {}
+        }
+        function trigger() {
+          if (scheduled) return;
+          scheduled = true;
+          setTimeout(() => { scheduled = false; check(); }, 250);
+        }
+        check();
+        try { fs.watch(dir, trigger); } catch (e) {}
+        setInterval(check, 30000);
+        EOF
+        node dist/index.js gateway --bind lan --port 18990 --allow-unconfigured &
+        GPID=$$!
+        node /tmp/approver.js &
+        APID=$$!
+        trap 'kill $$GPID $$APID 2>/dev/null' TERM INT
+        wait $$GPID
+        RC=$$?
+        kill $$APID 2>/dev/null
+        exit $$RC
+    extra_hosts:
+      - "host.docker.internal:host-gateway"    # lets the Ollama option reach a server on the host
+    environment:
+      # Pin config/workspace paths inside the container.
+      HOME: /home/node
+      OPENCLAW_HOME: /home/node
+      OPENCLAW_STATE_DIR: /home/node/.openclaw
+      OPENCLAW_CONFIG_DIR: /home/node/.openclaw
+      OPENCLAW_CONFIG_PATH: /home/node/.openclaw/openclaw.json
+      OPENCLAW_WORKSPACE_DIR: /home/node/.openclaw/workspace
+      # These ${VAR}s are declared in config_options.yml:
+      OPENCLAW_GATEWAY_TOKEN: '${OPENCLAW_GATEWAY_TOKEN}'
+      MODEL_PROVIDER: '${MODEL_PROVIDER}'
+      ANTHROPIC_API_KEY: '${ANTHROPIC_API_KEY}'
+      OPENAI_API_KEY: '${OPENAI_API_KEY}'
+      OPENROUTER_API_KEY: '${OPENROUTER_API_KEY}'
+      OLLAMA_MODEL: '${OLLAMA_MODEL}'
+      CUSTOM_BASE_URL: '${CUSTOM_BASE_URL}'
+      CUSTOM_MODEL: '${CUSTOM_MODEL}'
+      CUSTOM_API_KEY: '${CUSTOM_API_KEY}'
+      TELEGRAM_BOT_TOKEN: '${TELEGRAM_BOT_TOKEN}'
+      TELEGRAM_USER_ID: '${TELEGRAM_USER_ID}'
+      # Tagsy skill settings (declared in config_options.yml):
+      TAGSY_API_BASE: '${TAGSY_API_BASE}'
+      TAGSY_DEFAULT_LANG: '${TAGSY_DEFAULT_LANG}'
+      TAGSY_SKILL_GIT_URL: '${TAGSY_SKILL_GIT_URL}'
+    volumes:
+      - openclaw_home:/home/node                 # named volume persists config, plugins, pairings, workspace
+    networks:
+      default:
+        ipv4_address: 10.240.78.20
+
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: 10.240.78.0/24
+
+volumes:
+  openclaw_home:
