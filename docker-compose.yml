@@ -98,6 +98,12 @@ services:
           node dist/index.js plugins install duckduckgo </dev/null \
             && touch /home/node/.openclaw/.solohost-duckduckgo
         fi
+        # The Groq provider is an official plugin. Install it only when the
+        # operator picked Groq as the model provider.
+        if [ "$${MODEL_PROVIDER:-}" = "groq" ] && [ ! -f /home/node/.openclaw/.solohost-groq ]; then
+          node dist/index.js plugins install @openclaw/groq-provider </dev/null \
+            && touch /home/node/.openclaw/.solohost-groq
+        fi
         # Install the tagsy skill into the workspace skills directory
         # (highest precedence in OpenClaw's load order). Prefer a baked-in or
         # mounted copy at /opt/solotagsy-skills; otherwise clone the public
@@ -158,6 +164,24 @@ services:
                 api: "ollama",
                 timeoutSeconds: 300
               });
+              // Per-request Ollama tuning for the configured model. keep_alive
+              // stops the server from unloading the model after five idle
+              // minutes, and num_ctx gives the model room for the system
+              // prompt and chat history. Without num_ctx Ollama silently
+              // truncates at its 4096 default. Self-hosted endpoints still
+              // discover other installed models, so listing one is safe.
+              if (ollamaModel) {
+                c.models.providers.ollama.models = [{
+                  id: ollamaModel,
+                  name: ollamaModel,
+                  reasoning: false,
+                  input: ["text"],
+                  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+                  contextWindow: 16384,
+                  maxTokens: 4096,
+                  params: { num_ctx: 16384, keep_alive: "24h" }
+                }];
+              }
               // Small local models cope poorly with the full tool surface, so
               // lean mode trims prompts and tools for them.
               c.agents = c.agents || {};
@@ -180,12 +204,36 @@ services:
                 }]
               });
               startModel = "custom/" + customModel;
+            } else if (provider === "groq" && fs.existsSync(dir + "/.solohost-groq")) {
+              // Groq ships as an official provider plugin. Use it only once
+              // the startup install above has created the marker, so a failed
+              // plugin install never points the agent at a missing provider.
+              const groqModel = (process.env.GROQ_MODEL || "openai/gpt-oss-120b").trim();
+              startModel = "groq/" + groqModel;
             } else {
+              // OpenRouter "auto" picks a model per request, which can give
+              // inconsistent answers. OPENROUTER_MODEL pins one, for example
+              // "google/gemini-2.5-flash" or "meta-llama/llama-3.3-70b-instruct".
+              const openrouterModel = (process.env.OPENROUTER_MODEL || "auto").trim();
               startModel = {
                 anthropic: "anthropic/claude-haiku-4-5",
                 openai: "openai/gpt-6-astra",
-                openrouter: "openrouter/auto"
+                openrouter: "openrouter/" + openrouterModel
               }[provider] || "";
+            }
+
+            // SoloTagsy is a focused Tagsy assistant. Every skill visible to
+            // the agent adds its description to every prompt, which is costly
+            // for small local models. Default to exposing only the tagsy
+            // skill. Set AGENT_SKILLS_ALLOWLIST to a comma-separated list to
+            // widen the set, or to "all" to leave skills unrestricted.
+            const skillsAllow = (process.env.AGENT_SKILLS_ALLOWLIST || "tagsy").trim();
+            if (skillsAllow && skillsAllow.toLowerCase() !== "all") {
+              c.agents = c.agents || {};
+              c.agents.defaults = c.agents.defaults || {};
+              c.agents.defaults.skills = skillsAllow.split(",")
+                .map(function (s) { return s.trim(); })
+                .filter(Boolean);
             }
 
             // Apply the starting model only when the provider or model choice
@@ -294,6 +342,15 @@ services:
         try { fs.watch(dir, trigger); } catch (e) {}
         setInterval(check, 30000);
         EOF
+        # A container recreate can leave a stale gateway state lock held by the
+        # dead previous process. The new gateway then waits 95 seconds and
+        # fails. The state volume belongs to this install alone, so any lock
+        # found at startup belongs to a dead process. Recover it up front; the
+        # inspect step prints a confirm hash only when every record is stale.
+        LOCK_CONFIRM=$$(node dist/index.js gateway recover-lock 2>&1 | grep -oE '[a-f0-9]{64}' | head -n1)
+        if [ -n "$$LOCK_CONFIRM" ]; then
+          node dist/index.js gateway recover-lock --confirm "$$LOCK_CONFIRM" >/dev/null 2>&1 || true
+        fi
         node dist/index.js gateway --bind lan --port 18990 --allow-unconfigured &
         GPID=$$!
         node /tmp/approver.js &
@@ -323,12 +380,16 @@ services:
       CUSTOM_BASE_URL: '${CUSTOM_BASE_URL}'
       CUSTOM_MODEL: '${CUSTOM_MODEL}'
       CUSTOM_API_KEY: '${CUSTOM_API_KEY}'
+      GROQ_API_KEY: '${GROQ_API_KEY}'
+      GROQ_MODEL: '${GROQ_MODEL}'
+      OPENROUTER_MODEL: '${OPENROUTER_MODEL}'
       TELEGRAM_BOT_TOKEN: '${TELEGRAM_BOT_TOKEN}'
       TELEGRAM_USER_ID: '${TELEGRAM_USER_ID}'
       # Tagsy skill settings (declared in config_options.yml):
       TAGSY_API_BASE: '${TAGSY_API_BASE}'
       TAGSY_DEFAULT_LANG: '${TAGSY_DEFAULT_LANG}'
       TAGSY_SKILL_GIT_URL: '${TAGSY_SKILL_GIT_URL}'
+      AGENT_SKILLS_ALLOWLIST: '${AGENT_SKILLS_ALLOWLIST}'
     volumes:
       - openclaw_home:/home/node                 # named volume persists config, plugins, pairings, workspace
     networks:

@@ -58,6 +58,8 @@ fields:
         label: OpenAI
       - value: openrouter
         label: OpenRouter (many models, one key)
+      - value: groq
+        label: Groq (very fast cloud models)
       - value: ollama
         label: Ollama on this machine (no key needed)
       - value: custom
@@ -95,6 +97,30 @@ fields:
     visible_if:
       field: MODEL_PROVIDER
       in: [openrouter]
+
+  - name: OPENROUTER_MODEL
+    label: OpenRouter model id
+    type: text
+    required: false
+    help: >
+      Optional. Leave blank for auto routing, or pin a model id such as
+      google/gemini-2.5-flash or meta-llama/llama-3.3-70b-instruct for
+      consistent answers.
+    env_comment: OpenRouter model id the assistant starts on; blank means auto.
+    visible_if:
+      field: MODEL_PROVIDER
+      in: [openrouter]
+
+  - name: GROQ_API_KEY
+    label: Groq API key
+    type: password
+    preserve_if_blank: true
+    required: false
+    help: From console.groq.com/keys. Groq serves open-weight models very fast.
+    env_comment: API key used when the provider is Groq.
+    visible_if:
+      field: MODEL_PROVIDER
+      in: [groq]
 
   - name: OLLAMA_MODEL
     label: Ollama model name

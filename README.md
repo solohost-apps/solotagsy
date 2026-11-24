@@ -38,7 +38,10 @@ workspace skills directory (`/home/node/.openclaw/workspace/skills`):
 - **Control UI access token**: your login to the assistant UI. Choose any
   value, save it, and paste the same token to sign in after install.
 - **Model provider**: where the assistant gets its model (Anthropic, OpenAI,
-  OpenRouter, Ollama on this machine, or a custom OpenAI-compatible endpoint).
+  OpenRouter, Groq, Ollama on this machine, or a custom OpenAI-compatible
+  endpoint). Groq needs an API key from console.groq.com and answers very
+  fast; set `GROQ_MODEL` in `.env` to change the model (default
+  `openai/gpt-oss-120b`, try `openai/gpt-oss-20b` for more speed).
 - **Telegram bot token / user ID**: optional, same as SoloClaw.
 - **Tagsy API base URL**: defaults to `https://app.tagsy.org/api`. Change only
   if Tagsy gives you a different deployment.
