@@ -122,6 +122,19 @@ fields:
       field: MODEL_PROVIDER
       in: [groq]
 
+  - name: GROQ_MODEL
+    label: Groq model id
+    type: text
+    required: false
+    default: "openai/gpt-oss-120b"
+    help: >
+      Optional. The Groq model the assistant starts on. Leave the default
+      unless you want a different Groq model such as openai/gpt-oss-20b.
+    env_comment: Groq model id the assistant starts on.
+    visible_if:
+      field: MODEL_PROVIDER
+      in: [groq]
+
   - name: OLLAMA_MODEL
     label: Ollama model name
     type: text
@@ -205,3 +218,14 @@ fields:
       Language code for Tagsy answers, for example en, hi, or tl. Users can
       switch language in the chat at any time.
     env_comment: Default locale for tagsy skill answer templates.
+
+  - name: AGENT_SKILLS_ALLOWLIST
+    label: Enabled skill allowlist
+    type: text
+    required: false
+    default: "tagsy"
+    help: >
+      Advanced. Comma-separated skill names the assistant may use, for example
+      tagsy. Set to all to enable every installed skill. Only change this if
+      you know which skills are installed.
+    env_comment: Comma-separated allowlist of skill names visible to the agent.
