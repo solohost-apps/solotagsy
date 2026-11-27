@@ -30,7 +30,7 @@ after_save: >
 
 fixed_values:
   - name: TAGSY_SKILL_GIT_URL
-    value: "https://github.com/vrajasekhar1/solotagsy.git"
+    value: "https://github.com/solohost-apps/solotagsy.git"
     # Public repo holding this package and the skills/tagsy skill folder.
     # The gateway clones it at startup and installs the skill.
 
